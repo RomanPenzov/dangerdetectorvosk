@@ -1,33 +1,32 @@
-// Файл: MainActivity.kt
-// Это главный файл активности приложения DangerDetectorVosk. Здесь реализуется оффлайн-распознавание русской речи с помощью библиотеки Vosk
-// и анализ текста на наличие опасных слов. Используем TextView для вывода результатов в реальном времени.
-
 package com.penzov.dangerdetectorvosk
 
 import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Bundle
+import android.speech.tts.TextToSpeech
+import android.util.Log
 import android.widget.TextView
 import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
+import org.json.JSONObject
 import org.vosk.Model
 import org.vosk.Recognizer
 import org.vosk.android.RecognitionListener
+// SpeechService vs SpeechStreamService
+// SpeechService — работает с микрофоном напрямую (AudioRecord), подходит для онлайн-прослушивания (твоя текущая реализация).
+// SpeechStreamService — работает с потоком аудио (InputStream), полезен если, например, читаешь из файла или стримишь RTSP-поток.
 import org.vosk.android.SpeechService
 import java.io.File
-import java.io.FileOutputStream
 import java.io.IOException
+import java.util.*
 
 class MainActivity : ComponentActivity(), RecognitionListener {
 
-    // Объект для работы с распознаванием речи
     private var speechService: SpeechService? = null
-
-    // Текстовое поле для отображения распознанного текста
     private lateinit var resultTextView: TextView
+    private lateinit var tts: TextToSpeech
 
-    // Список слов, считающихся опасными — можно расширить
     private val dangerWords = listOf(
         "бомба", "убить", "нож", "стрелять", "взорвать", "террор", "громко", "кричать", "помогите", "опасность"
     )
@@ -35,27 +34,30 @@ class MainActivity : ComponentActivity(), RecognitionListener {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // Создаем текстовое поле и задаем его параметры
+        // Инициализируем TTS (Text-To-Speech) — для озвучивания фраз
+        tts = TextToSpeech(this) { status ->
+            if (status == TextToSpeech.SUCCESS) {
+                tts.language = Locale("ru")
+            }
+        }
+
         resultTextView = TextView(this).apply {
-            text = "Ожидание речи..."
+            text = "⏳ Загрузка..."
             textSize = 20f
             setPadding(16, 32, 16, 32)
         }
         setContentView(resultTextView)
 
-        // Проверяем наличие разрешения на запись с микрофона
+        // Проверяем разрешение на микрофон
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
             != PackageManager.PERMISSION_GRANTED
         ) {
-            // Если нет — запрашиваем у пользователя
             requestPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
         } else {
-            // Если есть — сразу запускаем модель и распознавание
             initModelAndStartRecognition()
         }
     }
 
-    // Объект для обработки результата запроса разрешения
     private val requestPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { isGranted ->
             if (isGranted) {
@@ -65,70 +67,53 @@ class MainActivity : ComponentActivity(), RecognitionListener {
             }
         }
 
-    // Метод для загрузки модели из assets и запуска распознавания речи
     private fun initModelAndStartRecognition() {
         try {
-            // Копируем модель из assets в файловую систему
-            val modelDir = unpackAssets("model")
-
-            // Загружаем модель из скопированной папки
+            // Копируем модель Vosk из assets в файловую систему
+            val modelDir = StorageService.unpackAssets(this, "model")
             val model = Model(modelDir.absolutePath)
 
-            // Создаем распознаватель с нужной частотой
             val recognizer = Recognizer(model, 16000.0f)
             speechService = SpeechService(recognizer, 16000.0f)
-
-            // Начинаем слушать микрофон
             speechService?.startListening(this)
 
             resultTextView.text = "🎤 Говорите, я слушаю..."
 
         } catch (e: IOException) {
-            e.printStackTrace()
+            Log.e("Vosk", "Ошибка загрузки модели: ${e.message}")
             resultTextView.text = "Ошибка загрузки модели: ${e.message}"
         }
     }
 
-    // Метод вызывается, когда есть промежуточный результат (не финальный)
     override fun onPartialResult(hypothesis: String?) {
-        // Можно реализовать отображение "живого" текста (по желанию)
+        // Можно добавить отображение живого текста
     }
 
-    // Метод вызывается при получении результата распознавания речи
     override fun onResult(hypothesis: String?) {
         hypothesis?.let {
             val text = extractText(it)
             val dangerDetected = containsDanger(text)
 
-            // Обновляем интерфейс в зависимости от наличия опасных слов
-            resultTextView.text = if (dangerDetected) {
-                "🚨 Обнаружено:\n$text"
+            if (dangerDetected) {
+                resultTextView.text = "🚨 Обнаружено:\n$text"
+                speak(text) // озвучка
+                TelegramNotifier.sendAlert(text) // уведомление
             } else {
-                "✅ Распознано:\n$text"
+                resultTextView.text = "✅ Распознано:\n$text"
             }
         }
     }
 
-    // Метод вызывается при финальном результате (когда пауза в речи)
     override fun onFinalResult(hypothesis: String?) {
-        hypothesis?.let {
-            val text = extractText(it)
-            val dangerDetected = containsDanger(text)
-
-            resultTextView.text = if (dangerDetected) {
-                "🛑 Опасность!\n$text"
-            } else {
-                "🔚 Финальный результат:\n$text"
-            }
-        }
+        // Аналогично onResult()
+        onResult(hypothesis)
     }
 
-    // Обработка ошибок при распознавании
     override fun onError(exception: Exception?) {
         resultTextView.text = "❌ Ошибка: ${exception?.message}"
+        Log.e("Vosk", "Ошибка: ${exception?.message}")
     }
 
-    // Вызывается, если долгое время не было речи
     override fun onTimeout() {
         resultTextView.text = "⏰ Таймаут. Попробуйте снова."
     }
@@ -136,49 +121,27 @@ class MainActivity : ComponentActivity(), RecognitionListener {
     override fun onDestroy() {
         super.onDestroy()
         speechService?.stop()
-        speechService = null
+        tts.shutdown()
     }
 
-    // Вспомогательная функция — извлекает текст из JSON-строки, которую возвращает Vosk
     private fun extractText(json: String): String {
-        return Regex("\"text\"\\s*:\\s*\"(.*?)\"")
-            .find(json)
-            ?.groups?.get(1)
-            ?.value ?: "Не удалось распознать текст"
+        return try {
+            val obj = JSONObject(json)
+            obj.optString("text", "Не удалось распознать текст")
+        } catch (e: Exception) {
+            "Не удалось распознать текст"
+        }
     }
 
-    // Проверка: содержит ли строка хотя бы одно из опасных слов
     private fun containsDanger(text: String): Boolean {
         val lowercase = text.lowercase()
         return dangerWords.any { word -> lowercase.contains(word) }
     }
 
-    // Копируем модель из assets в директорию filesDir, если она ещё не была скопирована
-    private fun unpackAssets(assetPath: String): File {
-        val assetManager = assets
-        val outDir = File(filesDir, assetPath)
-        if (outDir.exists()) return outDir
-
-        val files = assetManager.list(assetPath) ?: return outDir
-        outDir.mkdirs()
-
-        for (filename in files) {
-            val inPath = "$assetPath/$filename"
-            val outFile = File(outDir, filename)
-            val subFiles = assetManager.list(inPath)
-
-            if (!subFiles.isNullOrEmpty()) {
-                unpackAssets(inPath)
-            } else {
-                assetManager.open(inPath).use { input ->
-                    FileOutputStream(outFile).use { output ->
-                        input.copyTo(output)
-                    }
-                }
-            }
-        }
-
-        return outDir
+    // 🔊 Озвучиваем текст
+    private fun speak(text: String) {
+        tts.speak(text, TextToSpeech.QUEUE_FLUSH, null, null)
     }
 }
+
 
