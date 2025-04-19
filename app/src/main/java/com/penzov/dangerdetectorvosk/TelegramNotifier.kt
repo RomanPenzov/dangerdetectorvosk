@@ -12,7 +12,7 @@ object TelegramNotifier {
 
     // 🔐 Токен бота и ID получателя — ЗАМЕНИ при необходимости
     private const val botToken = "token bot"
-    private const val chatId = "186902597" // <- здесь мой Telegram ID (временно)
+    private const val chatId = "my test id" // <- здесь мой Telegram ID (временно)
 
     fun sendAlert(text: String) {
         val encodedText = URLEncoder.encode("🚨 Опасность: $text", "UTF-8")
