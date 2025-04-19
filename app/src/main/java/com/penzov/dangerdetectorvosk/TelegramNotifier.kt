@@ -11,7 +11,7 @@ import java.net.URLEncoder
 object TelegramNotifier {
 
     // 🔐 Токен бота и ID получателя — ЗАМЕНИ при необходимости
-    private const val botToken = "7981670687:AAFVb69As3SBWof7d_3ll3O6NjaEcbEfyYc"
+    private const val botToken = "token bot"
     private const val chatId = "186902597" // <- здесь мой Telegram ID (временно)
 
     fun sendAlert(text: String) {
